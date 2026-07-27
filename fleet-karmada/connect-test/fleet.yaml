@@ -1,0 +1,4 @@
+defaultNamespace: fleet-karmada-system
+
+helm:
+  waitForJobs: true

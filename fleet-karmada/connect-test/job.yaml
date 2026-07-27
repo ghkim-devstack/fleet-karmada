@@ -1,0 +1,55 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: fleet-karmada-api-connect-v1
+  labels:
+    app.kubernetes.io/name: fleet-karmada-api-connect
+    app.kubernetes.io/managed-by: fleet
+    testbed.io/component: karmada-connect-test
+spec:
+  backoffLimit: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fleet-karmada-api-connect
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: kubectl
+          image: docker.io/rancher/shell:v0.5.0
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -ec
+          args:
+            - |
+              echo "===== Fleet deployed Job ====="
+              echo "Pod: ${HOSTNAME}"
+
+              echo
+              echo "===== kubectl client ====="
+              kubectl version --client
+
+              echo
+              echo "===== Karmada API version ====="
+              kubectl \
+                --kubeconfig=/etc/karmada/kubeconfig \
+                get --raw='/version'
+
+              echo
+              echo "===== Karmada member clusters ====="
+              kubectl \
+                --kubeconfig=/etc/karmada/kubeconfig \
+                get clusters.cluster.karmada.io \
+                -o wide
+
+              echo
+              echo "===== Fleet to Karmada connection succeeded ====="
+          volumeMounts:
+            - name: karmada-kubeconfig
+              mountPath: /etc/karmada
+              readOnly: true
+      volumes:
+        - name: karmada-kubeconfig
+          secret:
+            secretName: karmada-kubeconfig
