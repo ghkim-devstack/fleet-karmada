@@ -4,7 +4,6 @@ metadata:
   name: fleet-karmada-api-connect-v1
   labels:
     app.kubernetes.io/name: fleet-karmada-api-connect
-    app.kubernetes.io/managed-by: fleet
     testbed.io/component: karmada-connect-test
 spec:
   backoffLimit: 1
