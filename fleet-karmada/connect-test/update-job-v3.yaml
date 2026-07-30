@@ -1,0 +1,150 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: fleet-karmada-update-v3
+  labels:
+    app.kubernetes.io/name: fleet-karmada-update
+    app.kubernetes.io/managed-by: fleet
+    testbed.io/component: karmada-update-test
+    testbed.io/revision: v3
+spec:
+  backoffLimit: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fleet-karmada-update
+        testbed.io/component: karmada-update-test
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: kubectl
+          image: docker.io/rancher/shell:v0.5.0
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -ec
+          args:
+            - |
+              KUBECONFIG_FILE=/etc/karmada/kubeconfig
+
+              echo "===== Fleet-Karmada Update Test ====="
+              echo "Pod: ${HOSTNAME}"
+
+              echo
+              echo "===== Karmada API connection ====="
+
+              kubectl \
+                --kubeconfig="${KUBECONFIG_FILE}" \
+                get --raw='/version'
+
+              echo
+              echo "===== Update Karmada source ConfigMap ====="
+
+              cat <<'MANIFEST' |
+              apiVersion: v1
+              kind: ConfigMap
+              metadata:
+                name: fleet-karmada-e2e
+                namespace: default
+                labels:
+                  app.kubernetes.io/managed-by: fleet-karmada-bridge
+                  testbed.io/test: fleet-karmada-e2e
+              data:
+                source: fleet
+                bridge: host-job
+                destination: karmada
+                revision: e2e-v3
+                update-source: git-commit
+                expected-clusters: r1-cluster,r2-cluster
+              MANIFEST
+              kubectl \
+                --kubeconfig="${KUBECONFIG_FILE}" \
+                apply \
+                --server-side \
+                --field-manager=fleet-karmada-bridge \
+                -f -
+
+              echo
+              echo "===== Updated Karmada source ConfigMap ====="
+
+              kubectl \
+                --kubeconfig="${KUBECONFIG_FILE}" \
+                -n default \
+                get configmap fleet-karmada-e2e \
+                -o yaml
+
+              echo
+              echo "===== Wait for r1/r2 Work update ====="
+
+              COUNT=0
+              SUCCESS=false
+
+              while [ "${COUNT}" -lt 90 ]; do
+                R1_WORK="$(
+                  kubectl \
+                    --kubeconfig="${KUBECONFIG_FILE}" \
+                    -n karmada-es-r1-cluster \
+                    get works.work.karmada.io \
+                    -o name |
+                  grep 'fleet-karmada-e2e' |
+                  head -n 1 || true
+                )"
+
+                R2_WORK="$(
+                  kubectl \
+                    --kubeconfig="${KUBECONFIG_FILE}" \
+                    -n karmada-es-r2-cluster \
+                    get works.work.karmada.io \
+                    -o name |
+                  grep 'fleet-karmada-e2e' |
+                  head -n 1 || true
+                )"
+
+                if [ -n "${R1_WORK}" ] && [ -n "${R2_WORK}" ]; then
+                  R1_STATE="$(
+                    kubectl \
+                      --kubeconfig="${KUBECONFIG_FILE}" \
+                      -n karmada-es-r1-cluster \
+                      get "${R1_WORK}" \
+                      -o jsonpath='{.spec.workload.manifests[0].data.revision}|{.spec.workload.manifests[0].data.update-source}|{.spec.workload.manifests[0].data.region}|{.spec.workload.manifests[0].data.member-cluster}|{.status.conditions[?(@.type=="Applied")].status}' \
+                      2>/dev/null || true
+                  )"
+
+                  R2_STATE="$(
+                    kubectl \
+                      --kubeconfig="${KUBECONFIG_FILE}" \
+                      -n karmada-es-r2-cluster \
+                      get "${R2_WORK}" \
+                      -o jsonpath='{.spec.workload.manifests[0].data.revision}|{.spec.workload.manifests[0].data.update-source}|{.spec.workload.manifests[0].data.region}|{.spec.workload.manifests[0].data.member-cluster}|{.status.conditions[?(@.type=="Applied")].status}' \
+                      2>/dev/null || true
+                  )"
+
+                  echo "r1=${R1_STATE}"
+                  echo "r2=${R2_STATE}"
+
+                  if [ "${R1_STATE}" = "e2e-v3|git-commit|region-one|r1-cluster|True" ] &&
+                     [ "${R2_STATE}" = "e2e-v3|git-commit|region-two|r2-cluster|True" ]; then
+                    SUCCESS=true
+                    break
+                  fi
+                fi
+
+                COUNT=$((COUNT + 1))
+                sleep 2
+              done
+
+              if [ "${SUCCESS}" != "true" ]; then
+                echo "Updated desired state was not reflected in both Work resources."
+                exit 1
+              fi
+
+              echo
+              echo "===== Fleet-Karmada update test succeeded ====="
+          volumeMounts:
+            - name: karmada-kubeconfig
+              mountPath: /etc/karmada
+              readOnly: true
+      volumes:
+        - name: karmada-kubeconfig
+          secret:
+            secretName: karmada-kubeconfig
