@@ -1,0 +1,183 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: fleet-karmada-cleanup-v4
+  labels:
+    app.kubernetes.io/name: fleet-karmada-cleanup
+    testbed.io/component: karmada-cleanup-test
+    testbed.io/revision: v4
+spec:
+  backoffLimit: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fleet-karmada-cleanup
+        testbed.io/component: karmada-cleanup-test
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: kubectl
+          image: docker.io/rancher/shell:v0.5.0
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -ec
+          args:
+            - |
+              KUBECONFIG_FILE=/etc/karmada/kubeconfig
+
+              echo "===== Fleet-Karmada Cleanup Test ====="
+              echo "Pod: ${HOSTNAME}"
+
+              echo
+              echo "===== Karmada API connection ====="
+
+              kubectl \
+                --kubeconfig="${KUBECONFIG_FILE}" \
+                get --raw='/version'
+
+              echo
+              echo "===== Current Karmada resources ====="
+
+              kubectl \
+                --kubeconfig="${KUBECONFIG_FILE}" \
+                -n default \
+                get configmap fleet-karmada-e2e
+
+              kubectl \
+                --kubeconfig="${KUBECONFIG_FILE}" \
+                -n default \
+                get propagationpolicy fleet-karmada-e2e
+
+              kubectl \
+                --kubeconfig="${KUBECONFIG_FILE}" \
+                -n default \
+                get overridepolicy fleet-karmada-e2e-region
+
+              kubectl \
+                --kubeconfig="${KUBECONFIG_FILE}" \
+                -n default \
+                get resourcebinding fleet-karmada-e2e-configmap \
+                -o wide
+
+              echo
+              echo "===== Delete Karmada source ConfigMap ====="
+
+              kubectl \
+                --kubeconfig="${KUBECONFIG_FILE}" \
+                -n default \
+                delete configmap fleet-karmada-e2e \
+                --ignore-not-found=true \
+                --wait=true \
+                --timeout=60s
+
+              echo
+              echo "===== Wait for ResourceBinding and Work deletion ====="
+
+              COUNT=0
+              SUCCESS=false
+
+              while [ "${COUNT}" -lt 90 ]; do
+                RB_COUNT="$(
+                  kubectl \
+                    --kubeconfig="${KUBECONFIG_FILE}" \
+                    -n default \
+                    get resourcebindings.work.karmada.io \
+                    -o name |
+                  grep -c 'fleet-karmada-e2e' || true
+                )"
+
+                R1_WORK_COUNT="$(
+                  kubectl \
+                    --kubeconfig="${KUBECONFIG_FILE}" \
+                    -n karmada-es-r1-cluster \
+                    get works.work.karmada.io \
+                    -o name |
+                  grep -c 'fleet-karmada-e2e' || true
+                )"
+
+                R2_WORK_COUNT="$(
+                  kubectl \
+                    --kubeconfig="${KUBECONFIG_FILE}" \
+                    -n karmada-es-r2-cluster \
+                    get works.work.karmada.io \
+                    -o name |
+                  grep -c 'fleet-karmada-e2e' || true
+                )"
+
+                echo \
+                  "ResourceBinding=${RB_COUNT}" \
+                  "r1-Work=${R1_WORK_COUNT}" \
+                  "r2-Work=${R2_WORK_COUNT}"
+
+                if [ "${RB_COUNT}" = "0" ] &&
+                   [ "${R1_WORK_COUNT}" = "0" ] &&
+                   [ "${R2_WORK_COUNT}" = "0" ]; then
+                  SUCCESS=true
+                  break
+                fi
+
+                COUNT=$((COUNT + 1))
+                sleep 2
+              done
+
+              if [ "${SUCCESS}" != "true" ]; then
+                echo "ResourceBinding or Work was not deleted in time."
+                exit 1
+              fi
+
+              echo
+              echo "===== Delete Karmada policies ====="
+
+              kubectl \
+                --kubeconfig="${KUBECONFIG_FILE}" \
+                -n default \
+                delete overridepolicy fleet-karmada-e2e-region \
+                --ignore-not-found=true
+
+              kubectl \
+                --kubeconfig="${KUBECONFIG_FILE}" \
+                -n default \
+                delete propagationpolicy fleet-karmada-e2e \
+                --ignore-not-found=true
+
+              echo
+              echo "===== Verify Karmada cleanup ====="
+
+              if kubectl \
+                --kubeconfig="${KUBECONFIG_FILE}" \
+                -n default \
+                get configmap fleet-karmada-e2e \
+                >/dev/null 2>&1; then
+                echo "ConfigMap still exists."
+                exit 1
+              fi
+
+              if kubectl \
+                --kubeconfig="${KUBECONFIG_FILE}" \
+                -n default \
+                get propagationpolicy fleet-karmada-e2e \
+                >/dev/null 2>&1; then
+                echo "PropagationPolicy still exists."
+                exit 1
+              fi
+
+              if kubectl \
+                --kubeconfig="${KUBECONFIG_FILE}" \
+                -n default \
+                get overridepolicy fleet-karmada-e2e-region \
+                >/dev/null 2>&1; then
+                echo "OverridePolicy still exists."
+                exit 1
+              fi
+
+              echo
+              echo "===== Fleet-Karmada cleanup test succeeded ====="
+          volumeMounts:
+            - name: karmada-kubeconfig
+              mountPath: /etc/karmada
+              readOnly: true
+      volumes:
+        - name: karmada-kubeconfig
+          secret:
+            secretName: karmada-kubeconfig
