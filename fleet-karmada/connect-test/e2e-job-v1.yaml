@@ -1,0 +1,160 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: fleet-karmada-e2e-v1
+  labels:
+    app.kubernetes.io/name: fleet-karmada-e2e
+    app.kubernetes.io/managed-by: fleet
+    testbed.io/component: karmada-fanout-test
+    testbed.io/revision: v1
+spec:
+  backoffLimit: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fleet-karmada-e2e
+        testbed.io/component: karmada-fanout-test
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: kubectl
+          image: docker.io/rancher/shell:v0.5.0
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -ec
+          args:
+            - |
+              KUBECONFIG_FILE=/etc/karmada/kubeconfig
+
+              echo "===== Fleet-Karmada E2E Test ====="
+              echo "Pod: ${HOSTNAME}"
+
+              echo
+              echo "===== Karmada API connection ====="
+              kubectl \
+                --kubeconfig="${KUBECONFIG_FILE}" \
+                get --raw='/version'
+
+              echo
+              echo "===== Karmada member clusters ====="
+              kubectl \
+                --kubeconfig="${KUBECONFIG_FILE}" \
+                get clusters.cluster.karmada.io \
+                -o wide
+
+              echo
+              echo "===== Apply PropagationPolicy and ConfigMap ====="
+
+              cat <<'MANIFEST' |
+              apiVersion: policy.karmada.io/v1alpha1
+              kind: PropagationPolicy
+              metadata:
+                name: fleet-karmada-e2e
+                namespace: default
+                labels:
+                  app.kubernetes.io/managed-by: fleet-karmada-bridge
+                  testbed.io/test: fleet-karmada-e2e
+              spec:
+                resourceSelectors:
+                  - apiVersion: v1
+                    kind: ConfigMap
+                    name: fleet-karmada-e2e
+                placement:
+                  clusterAffinity:
+                    clusterNames:
+                      - r1-cluster
+                      - r2-cluster
+              ---
+              apiVersion: v1
+              kind: ConfigMap
+              metadata:
+                name: fleet-karmada-e2e
+                namespace: default
+                labels:
+                  app.kubernetes.io/managed-by: fleet-karmada-bridge
+                  testbed.io/test: fleet-karmada-e2e
+              data:
+                source: fleet
+                bridge: host-job
+                destination: karmada
+                revision: e2e-v1
+                expected-clusters: r1-cluster,r2-cluster
+              MANIFEST
+              kubectl \
+                --kubeconfig="${KUBECONFIG_FILE}" \
+                apply \
+                --server-side \
+                --field-manager=fleet-karmada-bridge \
+                -f -
+
+              echo
+              echo "===== Karmada source resources ====="
+              kubectl \
+                --kubeconfig="${KUBECONFIG_FILE}" \
+                -n default \
+                get propagationpolicy fleet-karmada-e2e \
+                -o wide
+
+              kubectl \
+                --kubeconfig="${KUBECONFIG_FILE}" \
+                -n default \
+                get configmap fleet-karmada-e2e \
+                -o yaml
+
+              echo
+              echo "===== Wait for ResourceBinding creation ====="
+
+              RB=""
+              COUNT=0
+
+              while [ "${COUNT}" -lt 60 ]; do
+                RB="$(
+                  kubectl \
+                    --kubeconfig="${KUBECONFIG_FILE}" \
+                    -n default \
+                    get resourcebindings.work.karmada.io \
+                    -o name |
+                  grep 'fleet-karmada-e2e' |
+                  head -n 1 || true
+                )"
+
+                if [ -n "${RB}" ]; then
+                  break
+                fi
+
+                COUNT=$((COUNT + 1))
+                sleep 2
+              done
+
+              if [ -z "${RB}" ]; then
+                echo "ResourceBinding was not created."
+                exit 1
+              fi
+
+              echo "ResourceBinding: ${RB}"
+
+              kubectl \
+                --kubeconfig="${KUBECONFIG_FILE}" \
+                -n default \
+                get "${RB}" \
+                -o wide
+
+              echo
+              echo "===== Current Work resources ====="
+
+              kubectl \
+                --kubeconfig="${KUBECONFIG_FILE}" \
+                get works.work.karmada.io \
+                -A
+
+              echo
+              echo "===== Fleet to Karmada apply succeeded ====="
+          volumeMounts:
+            - name: karmada-kubeconfig
+              mountPath: /etc/karmada
+              readOnly: true
+      volumes:
+        - name: karmada-kubeconfig
+          secret:
+            secretName: karmada-kubeconfig
