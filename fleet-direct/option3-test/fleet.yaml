@@ -1,1 +1,18 @@
 defaultNamespace: fleet-direct-test
+
+targetCustomizations:
+  - name: r1
+    clusterSelector:
+      matchLabels:
+        testbed.io/region: r1
+    yaml:
+      overlays:
+        - r1
+
+  - name: r2
+    clusterSelector:
+      matchLabels:
+        testbed.io/region: r2
+    yaml:
+      overlays:
+        - r2

@@ -9,5 +9,5 @@ data:
   source: fleet
   mode: direct
   revision: v2
-  region: common
-  member-cluster: common
+  region: region-two
+  member-cluster: r2-cluster
