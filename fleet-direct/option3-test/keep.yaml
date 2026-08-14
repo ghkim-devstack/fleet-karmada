@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fleet-direct-keep
+data:
+  purpose: keep-bundle-active
+  revision: prune-test
